@@ -1,2 +1,0 @@
-# PhoneyNumb.
-电号

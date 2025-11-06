@@ -1,0 +1,12 @@
+{
+  "name": "大凉国云通信",
+  "short_name": "凉国通信",
+  "start_url": "./index.html", // 启动页指向你的登录页
+  "display": "standalone", // 关键！独立 APP 窗口（无浏览器控件）
+  "background_color": "#f4f4f9",
+  "theme_color": "#004bbb",
+  "icons": [
+    { "src": "./1762414107892.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./1762414171387.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

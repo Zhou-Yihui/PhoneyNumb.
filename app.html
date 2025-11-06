@@ -1,0 +1,1200 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>大凉国云通信</title>
+<meta name="theme-color" content="#004bbb">
+<style>
+:root{--main:#004bbb;--bg:#f4f4f9}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,"Noto Sans",sans-serif;background:var(--bg)}
+header{background:var(--main);color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
+#screen{max-width:600px;margin:0 auto;background:#fff;min-height:100vh;display:flex;flex-direction:column}
+#nav{display:flex;border-bottom:1px solid #ddd}
+#nav button{flex:1;padding:10px;border:none;background:#fff;cursor:pointer;transition:.2s}
+#nav button.active{background:var(--main);color:#fff}
+.page{display:none;padding:16px;flex:1}
+.page.active{display:block}
+input,textarea,select{width:100%;padding:8px;margin:6px 0;box-sizing:border-box;border:1px solid #ccc;border-radius:4px}
+button{padding:8px 12px;border:none;border-radius:4px;background:var(--main);color:#fff;cursor:pointer}
+button:disabled{background:#aaa}
+.call-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}
+.call-pad button{padding:18px;font-size:20px}
+#callStatus{font-size:18px;margin:10px 0}
+#msgList{max-height:40vh;overflow:auto;border:1px solid #ddd;padding:6px;border-radius:4px;background:#fafafa}
+.msg{margin:4px 0;padding:4px;border-radius:4px;max-width:80%;word-wrap:break-word}.msg.me{text-align:right;margin-left:auto;background:#e3f2fd}.msg.other{margin-right:auto;background:#f5f5f5}
+.group-invite{background:#ffe7ba;padding:6px;border-radius:4px;margin:4px 0}
+#phoneList,#groupList,#callHistory{list-style:none;padding:0}
+#phoneList li,#groupList li,#callHistory li{background:#f9f9f9;padding:8px;margin:4px 0;border:1px solid #ddd;border-radius:4px;display:flex;justify-content:space-between;align-items:center}
+/* 通话弹窗 */
+.call-modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;flex-direction:column;justify-content:center;align-items:center;color:#fff;z-index:999}
+.call-modal.hidden{display:none}
+.call-controls{display:flex;gap:20px;margin-top:40px}
+.call-controls button{width:60px;height:60px;border-radius:50%;font-size:20px;display:flex;align-items:center;justify-content:center}
+.call-controls button.danger{background:#e74c3c}
+</style>
+</head>
+<body>
+<div id="screen">
+  <header>
+    <span>📞 大凉国云通信</span>
+    <span id="userInfo"></span>
+    <button onclick="logout()" style="padding:4px 8px;font-size:14px;">退出</button>
+  </header>
+
+  <nav id="nav">
+    <button class="navBtn active" data-page="dialPage">拨号</button>
+    <button class="navBtn" data-page="smsPage">短信</button>
+    <button class="navBtn" data-page="groupPage">群组</button>
+    <button onclick="location.href='./gen.html'">生号</button>
+  </nav>
+
+  <!-- 拨号 -->
+  <section id="dialPage" class="page active">
+    <h3>拨号盘</h3>
+    <input id="dialNumber" placeholder="例：+3-000-12345678">
+    <div class="call-pad">
+      <button onclick="press('1')">1</button><button onclick="press('2')">2</button><button onclick="press('3')">3</button>
+      <button onclick="press('4')">4</button><button onclick="press('5')">5</button><button onclick="press('6')">6</button>
+      <button onclick="press('7')">7</button><button onclick="press('8')">8</button><button onclick="press('9')">9</button>
+      <button onclick="press('*')">*</button><button onclick="press('0')">0</button><button onclick="press('#')">#</button>
+      <button onclick="delLast()" style="grid-column:2">⌫</button>
+    </div>
+    <button onclick="makeCall()">📞 拨打</button>
+    <div id="callStatus">就绪</div>
+    <h4>最近通话</h4>
+    <ul id="callHistory"></ul>
+  </section>
+
+  <!-- 短信 -->
+  <section id="smsPage" class="page">
+    <h3>收发短信</h3>
+    <input id="smsTo" placeholder="接收方号码/群组ID（群组以g开头）">
+    <textarea id="smsBody" rows="3" placeholder="短信内容" maxlength="500"></textarea>
+    <button onclick="sendSms()">发送</button>
+    <h4>聊天记录</h4>
+    <div id="msgList"></div>
+  </section>
+
+  <!-- 群组 -->
+  <section id="groupPage" class="page">
+    <h3>群组</h3>
+    <input id="groupName" placeholder="新群组名称" maxlength="30">
+    <button onclick="createGroup()">创建群组</button>
+    <h4>我的群组</h4>
+    <ul id="groupList"></ul>
+    <h4>邀请链接（本地模拟）</h4>
+    <input id="inviteLink" readonly>
+    <button onclick="joinFromLink()">通过链接加入</button>
+  </section>
+</div>
+
+<!-- 通话弹窗 -->
+<div id="callModal" class="call-modal hidden">
+  <h2 id="callerInfo">正在通话中...</h2>
+  <div class="call-controls">
+    <button class="danger" onclick="endCall()">❌</button>
+    <button onclick="answerCall()" id="answerBtn" style="background:#2ecc71">📞</button>
+  </div>
+</div>
+
+<script>
+/* ===================== 核心配置 ===================== */
+const STORAGE_KEYS = {
+  currentUser: 'dl_currentUser',
+  userPhoneMap: 'dl_userPhoneMap', // 用户名-号码映射：{ 用户名: 号码 }
+  users: 'dl_users', // 所有用户：{ 号码: { name: 昵称, online: 布尔值, lastOnline: 时间戳 } }
+  sms: 'dl_sms', // 短信记录：[{ from, to, body, time, type: 'private/group' }]
+  calls: 'dl_calls', // 通话记录：[{ target, type: 'in/out/missed', time, duration }]
+  groups: 'dl_groups', // 群组：{ 群组ID: { name, owner, members: [号码列表] } }
+  webrtcSignals: 'dl_webrtc_signals' // WebRTC信令：{ 目标号码: [信令对象] }
+};
+
+/* ===================== 全局变量 ===================== */
+let currentUser; // 当前用户：{ name: 用户名, phone: 号码 }
+let rtcConnections = {}; // WebRTC连接：{ 对方号码: RTCPeerConnection }
+let dataChannels = {}; // 数据通道：{ 对方号码/群组ID: RTCDataChannel }
+let currentCall = null; // 当前通话：{ target, isIncoming, startTime, stream }
+let localAudioStream = null; // 本地音频流
+
+/* ===================== 工具函数 ===================== */
+function getStorage(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || '{}');
+  } catch (e) {
+    localStorage.removeItem(key);
+    return {};
+  }
+}
+
+function setStorage(key, data) {
+  localStorage.setItem(key, JSON.stringify(data));
+}
+
+function formatTime(timestamp) {
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+// 生成唯一ID
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+// 发送WebRTC信令
+function sendWebrtcSignal(targetPhone, signal) {
+  const signals = getStorage(STORAGE_KEYS.webrtcSignals);
+  if (!signals[targetPhone]) signals[targetPhone] = [];
+  signals[targetPhone].push({ from: currentUser.phone, signal, time: Date.now() });
+  setStorage(STORAGE_KEYS.webrtcSignals, signals);
+}
+
+// 处理收到的WebRTC信令
+function handleWebrtcSignal(signalData) {
+  const { from: callerPhone, signal } = signalData;
+  const { type, sdp, candidate } = signal;
+
+  // 忽略自己发送的信令
+  if (callerPhone === currentUser.phone) return;
+
+  switch (type) {
+    case 'offer':
+      handleIncomingCall(callerPhone, sdp);
+      break;
+    case 'answer':
+      handleAnswer(callerPhone, sdp);
+      break;
+    case 'candidate':
+      handleCandidate(callerPhone, candidate);
+      break;
+    case 'hangup':
+      handleHangup(callerPhone);
+      break;
+    default:
+      break;
+  }
+}
+
+// 初始化数据通道
+function initDataChannel(dc, target) {
+  dc.onopen = () => {
+    console.log(`与 ${target} 的数据通道已打开`);
+    dataChannels[target] = dc;
+  };
+
+  dc.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === 'sms') {
+      // 接收短信
+      const smsList = getStorage(STORAGE_KEYS.sms);
+      smsList.push({
+        from: target,
+        to: currentUser.phone,
+        body: data.body,
+        time: Date.now(),
+        type: 'private'
+      });
+      setStorage(STORAGE_KEYS.sms, smsList);
+      if (document.getElementById('smsPage').classList.contains('active')) {
+        renderSms();
+      }
+      pushNotification(`新短信来自 ${target}`);
+    } else if (data.type === 'group-sms') {
+      // 接收群组短信
+      const smsList = getStorage(STORAGE_KEYS.sms);
+      smsList.push({
+        from: data.from,
+        to: data.groupId,
+        body: data.body,
+        time: Date.now(),
+        type: 'group'
+      });
+      setStorage(STORAGE_KEYS.sms, smsList);
+      if (document.getElementById('smsPage').classList.contains('active')) {
+        renderSms();
+      }
+      pushNotification(`新群组短信来自 ${data.groupName}`);
+    }
+  };
+
+  dc.onclose = () => {
+    console.log(`与 ${target} 的数据通道已关闭`);
+    delete dataChannels[target];
+  };
+}
+
+/* ===================== 初始化 ===================== */
+(function init() {
+  // 登录校验
+  const userName = localStorage.getItem(STORAGE_KEYS.currentUser);
+  if (!userName) {
+    location.href = './index.html';
+    return;
+  }
+
+  // 绑定用户号码（从gen.html生成的号码）
+  const userPhoneMap = getStorage(STORAGE_KEYS.userPhoneMap);
+  const userPhone = userPhoneMap[userName];
+  if (!userPhone || !userPhone.startsWith('+3')) {
+    const phone = prompt('请绑定你的大凉国电话号码（从"生号"页面生成）：');
+    if (!phone || !phone.startsWith('+3')) {
+      alert('无效号码！请重新登录');
+      logout();
+      return;
+    }
+    userPhoneMap[userName] = phone;
+    setStorage(STORAGE_KEYS.userPhoneMap, userPhoneMap);
+
+    // 初始化用户信息
+    const users = getStorage(STORAGE_KEYS.users);
+    users[phone] = { name: userName, online: true, lastOnline: Date.now() };
+    setStorage(STORAGE_KEYS.users, users);
+  }
+
+  // 标记当前用户在线
+  const users = getStorage(STORAGE_KEYS.users);
+  users[userPhone] = { ...users[userPhone], online: true, lastOnline: Date.now() };
+  setStorage(STORAGE_KEYS.users, users);
+
+  // 初始化当前用户信息
+  currentUser = { name: userName, phone: userPhone };
+  document.getElementById('userInfo').textContent = `${currentUser.name} (${currentUser.phone})`;
+
+  // 初始化WebRTC信令监听
+  initWebrtcSignalListener();
+
+  // 页面切换事件（保留原有逻辑）
+  document.querySelectorAll('.navBtn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.navBtn').forEach(b => b.classList.remove('active'));
+      const page = document.getElementById(btn.dataset.page);
+      if (page) page.classList.add('active');
+      btn.classList.add('active');
+      if (btn.dataset.page === 'smsPage') renderSms();
+      if (btn.dataset.page === 'groupPage') renderGroups();
+      if (btn.dataset.page === 'dialPage') renderCallHistory();
+    });
+  });
+
+  // 页面关闭时标记离线
+  window.addEventListener('beforeunload', () => {
+    const users = getStorage(STORAGE_KEYS.users);
+    if (users[currentUser.phone]) {
+      users[currentUser.phone].online = false;
+      users[currentUser.phone].lastOnline = Date.now();
+      setStorage(STORAGE_KEYS.users, users);
+    }
+    // 关闭所有通话和连接
+    if (currentCall) endCall();
+    Object.values(rtcConnections).forEach(pc => pc.close());
+  });
+
+  // 初始化通知权限
+  if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+    Notification.requestPermission();
+  }
+
+  // 初始渲染
+  renderSms();
+  renderGroups();
+  renderCallHistory();
+})();
+
+/* ===================== WebRTC信令监听 ===================== */
+function initWebrtcSignalListener() {
+  // 定期检查新信令（纯前端模拟信令服务器）
+  setInterval(() => {
+    const signals = getStorage(STORAGE_KEYS.webrtcSignals);
+    const mySignals = signals[currentUser.phone] || [];
+    if (mySignals.length > 0) {
+      mySignals.forEach(signalData => handleWebrtcSignal(signalData));
+      // 清空已处理的信令
+      signals[currentUser.phone] = [];
+      setStorage(STORAGE_KEYS.webrtcSignals, signals);
+    }
+  }, 1000);
+}
+
+/* ===================== 通话功能 ===================== */
+function press(ch) {
+  document.getElementById('dialNumber').value += ch;
+}
+
+function delLast() {
+  const input = document.getElementById('dialNumber');
+  input.value = input.value.slice(0, -1);
+}
+
+// 发起通话
+async function makeCall() {
+  const targetPhone = document.getElementById('dialNumber').value.trim();
+  if (!targetPhone || !targetPhone.startsWith('+3')) {
+    alert('请输入有效的大凉国号码（以+3开头）');
+    return;
+  }
+
+  // 检查对方是否存在
+  const users = getStorage(STORAGE_KEYS.users);
+  if (!users[targetPhone]) {
+    alert('对方号码未注册');
+    return;
+  }
+
+  // 避免重复通话
+  if (currentCall) {
+    alert('当前已有通话进行中');
+    return;
+  }
+
+  currentCall = { target: targetPhone, isIncoming: false, startTime: null };
+  document.getElementById('callStatus').textContent = `正在呼叫 ${targetPhone}...`;
+  document.getElementById('callerInfo').
+textContent = `呼叫 ${targetPhone}`;
+  document.getElementById('answerBtn').style.display = 'none';
+  document.getElementById('callModal').classList.remove('hidden');
+
+  try {
+    // 获取本地音频流
+    localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // 创建WebRTC连接
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }, // 公共STUN服务器，用于NAT穿透
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    });
+    rtcConnections[targetPhone] = pc;
+
+    // 添加本地流到连接
+    localAudioStream.getTracks().forEach(track => pc.addTrack(track, localAudioStream));
+
+    // 监听远程流（对方音频）
+    pc.ontrack = (e) => {
+      if (e.streams && e.streams[0]) {
+        currentCall.stream = e.streams[0];
+        // 播放对方音频（创建隐藏audio元素）
+        const audio = document.createElement('audio');
+        audio.srcObject = e.streams[0];
+        audio.autoplay = true;
+        audio.hidden = true;
+        document.body.appendChild(audio);
+      }
+    };
+
+    // 创建数据通道（用于通话控制和短信）
+    const dc = pc.createDataChannel('call-control');
+    initDataChannel(dc, targetPhone);
+
+    // 监听ICE候选
+    pc.onicecandidate = e => {
+      if (e.candidate) {
+        sendWebrtcSignal(targetPhone, { type: 'candidate', candidate: e.candidate.toJSON() });
+      }
+    };
+
+    // 监听连接状态变化
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        document.getElementById('callStatus').textContent = `与 ${targetPhone} 通话中`;
+        document.getElementById('callerInfo').textContent = `与 ${targetPhone} 通话中`;
+        currentCall.startTime = Date.now();
+      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        if (currentCall) endCall();
+      }
+    };
+
+    // 创建offer并发送
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendWebrtcSignal(targetPhone, { type: 'offer', sdp: offer.sdp });
+
+  } catch (err) {
+    console.error('发起通话失败：', err);
+    alert('获取麦克风权限失败或通话初始化失败');
+    endCall();
+  }
+}
+
+// 处理来电
+function handleIncomingCall(callerPhone, sdp) {
+  // 避免重复通话
+  if (currentCall) {
+    sendWebrtcSignal(callerPhone, { type: 'hangup' });
+    return;
+  }
+
+  // 获取对方用户信息
+  const users = getStorage(STORAGE_KEYS.users);
+  const callerName = users[callerPhone]?.name || callerPhone;
+
+  currentCall = { target: callerPhone, isIncoming: true, startTime: null, stream: null };
+  document.getElementById('callStatus').textContent = `来自 ${callerName} 的来电...`;
+  document.getElementById('callerInfo').textContent = `来电：${callerName}`;
+  document.getElementById('answerBtn').style.display = 'flex';
+  document.getElementById('callModal').classList.remove('hidden');
+
+  // 创建WebRTC连接
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  });
+  rtcConnections[callerPhone] = pc;
+
+  // 监听远程流（对方音频）
+  pc.ontrack = (e) => {
+    if (e.streams && e.streams[0]) {
+      currentCall.stream = e.streams[0];
+      const audio = document.createElement('audio');
+      audio.srcObject = e.streams[0];
+      audio.autoplay = true;
+      audio.hidden = true;
+      document.body.appendChild(audio);
+    }
+  };
+
+  // 监听数据通道（对方创建的）
+  pc.ondatachannel = (e) => {
+    initDataChannel(e.channel, callerPhone);
+  };
+
+  // 监听ICE候选
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      sendWebrtcSignal(callerPhone, { type: 'candidate', candidate: e.candidate.toJSON() });
+    }
+  };
+
+  // 监听连接状态变化
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      if (currentCall) endCall();
+    }
+  };
+
+  // 设置远程描述（来电offer）
+  pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }))
+    .catch(err => {
+      console.error('设置远程描述失败：', err);
+      endCall();
+    });
+}
+
+// 处理通话应答
+async function answerCall() {
+  if (!currentCall || currentCall.isIncoming !== true) return;
+
+  const targetPhone = currentCall.target;
+  document.getElementById('answerBtn').style.display = 'none';
+  document.getElementById('callStatus').textContent = `与 ${targetPhone} 通话中`;
+  document.getElementById('callerInfo').textContent = `与 ${targetPhone} 通话中`;
+
+  try {
+    // 获取本地音频流
+    localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // 获取已创建的RTCPeerConnection
+    const pc = rtcConnections[targetPhone];
+    if (!pc) throw new Error('未找到通话连接');
+
+    // 添加本地流到连接
+    localAudioStream.getTracks().forEach(track => pc.addTrack(track, localAudioStream));
+
+    // 创建answer并发送
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    sendWebrtcSignal(targetPhone, { type: 'answer', sdp: answer.sdp });
+
+    currentCall.startTime = Date.now();
+
+  } catch (err) {
+    console.error('接听通话失败：', err);
+    alert('获取麦克风权限失败或接听失败');
+    endCall();
+  }
+}
+
+// 处理ICE候选
+function handleCandidate(targetPhone, candidate) {
+  const pc = rtcConnections[targetPhone];
+  if (pc) {
+    pc.addIceCandidate(new RTCIceCandidate(candidate))
+      .catch(err => console.error('添加ICE候选失败：', err));
+  }
+}
+
+// 处理对方挂断
+function handleHangup(targetPhone) {
+  if (currentCall && currentCall.target === targetPhone) {
+    const duration = currentCall.startTime ? Math.floor((Date.now() - currentCall.startTime) / 1000) : 0;
+    // 保存通话记录（未接/已接）
+    const callType = currentCall.isIncoming ? (currentCall.startTime ? 'in' : 'missed') : 'out';
+    saveCallRecord(targetPhone, callType, duration);
+    
+    // 清理通话状态
+    clearCallState();
+    document.getElementById('callStatus').textContent = `对方已挂断（时长：${formatDuration(duration)}）`;
+    pushNotification(`通话结束：${targetPhone}`);
+  }
+}
+
+// 结束通话
+function endCall() {
+  if (!currentCall) return;
+
+  const targetPhone = currentCall.target;
+  const pc = rtcConnections[targetPhone];
+
+  // 发送挂断信令
+  sendWebrtcSignal(targetPhone, { type: 'hangup' });
+
+  // 计算通话时长
+  const duration = currentCall.startTime ? Math.floor((Date.now() - currentCall.startTime) / 1000) : 0;
+
+  // 保存通话记录
+  const callType = currentCall.isIncoming ? (currentCall.startTime ? 'in' : 'missed') : 'out';
+  saveCallRecord(targetPhone, callType, duration);
+
+  // 清理通话状态
+  clearCallState();
+
+  // 关闭WebRTC连接
+  if (pc) {
+    pc.close();
+    delete rtcConnections[targetPhone];
+  }
+
+  // 停止本地音频流
+  if (localAudioStream) {
+    localAudioStream.getTracks().forEach(track => track.stop());
+    localAudioStream = null;
+  }
+
+  // 移除远程音频元素
+  document.querySelectorAll('audio[hidden]').forEach(audio => audio.remove());
+
+  document.getElementById('callStatus').textContent = `通话结束（时长：${formatDuration(duration)}）`;
+  pushNotification(`通话结束：${targetPhone}`);
+}
+
+// 格式化通话时长
+function formatDuration(seconds) {
+  if (seconds < 60) return `${seconds}秒`;
+  const min = Math.floor(seconds / 60);
+  const sec = seconds % 60;
+  return `${min}分${sec}秒`;
+}
+
+// 保存通话记录
+function saveCallRecord(target, type, duration) {
+  const calls = getStorage(STORAGE_KEYS.calls);
+  calls[Date.now()] = {
+    target,
+    type, // in: 已接来电, out: 呼出, missed: 未接来电
+    time: Date.now(),
+    duration
+  };
+  setStorage(STORAGE_KEYS.calls, calls);
+  renderCallHistory();
+}
+
+// 清理通话状态
+function clearCallState() {
+  currentCall = null;
+  document.getElementById('callModal').classList.add('hidden');
+}
+
+/* ===================== 短信功能 ===================== */
+async function sendSms() {
+  const to = document.getElementById('smsTo').value.trim();
+  const body = document.getElementById('smsBody').value.trim();
+  if (!to || !body) {
+    alert('请输入接收方和短信内容');
+    return;
+  }
+
+  // 区分私人短信和群组短信
+  if (to.startsWith('g')) {
+    // 群组短信
+    const groups = getStorage(STORAGE_KEYS.groups);
+    const group = groups[to];
+    if (!group) {
+      alert('群组不存在');
+      return;
+    }
+    if (!group.members.includes(currentUser.phone)) {
+      alert('你不是该群组成员');
+      return;
+    }
+
+    // 保存群组短信记录
+    const smsList = getStorage(STORAGE_KEYS.sms);
+    smsList.push({
+      from: currentUser.phone,
+      to: to,
+      body,
+      time: Date.now(),
+      type: 'group'
+    });
+    setStorage(STORAGE_KEYS.sms, smsList);
+
+    // 向群组所有成员发送（通过WebRTC数据通道）
+    group.members.forEach(member => {
+      if (member === currentUser.phone) return;
+      const dc = dataChannels[member];
+      if (dc && dc.readyState === 'open') {
+        dc.send(JSON.stringify({
+          type: 'group-sms',
+          from: currentUser.phone,
+          groupId: to,
+          groupName: group.name,
+          body
+        }));
+      } else {
+        // 若未建立连接，暂存为离线短信（纯前端模拟）
+        const offlineSms = getStorage('dl_offline_sms');
+        if (!offlineSms[member]) offlineSms[member] = [];
+        offlineSms[member].push({
+          type: 'group-sms',
+          from: currentUser.phone,
+          groupId: to,
+          groupName: group.name,
+          body,
+          time: Date.now()
+        });
+        setStorage('dl_offline_sms', offlineSms);
+      }
+    });
+
+  } else {
+    // 私人短信
+    if (!to.startsWith('+3')) {
+      alert('请输入有效的大凉国号码（以+3开头）');
+      return;
+    }
+
+    const users = getStorage(STORAGE_KEYS.users);
+    if (!users[to]) {
+      alert('对方号码未注册');
+      return;
+    }
+
+    // 保存私人短信记录
+    const smsList = getStorage(STORAGE_KEYS.sms);
+    smsList.push({
+      from: currentUser.phone,
+      to,
+      body,
+      time: Date.now(),
+      type: 'private'
+    });
+    setStorage(STORAGE_KEYS.sms, smsList);
+
+    // 通过WebRTC数据通道发送
+    let dc = dataChannels[to];
+    if (!dc || dc.readyState !== 'open') {
+      // 若未建立连接，创建临时WebRTC连接
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      dc = pc.createDataChannel('sms-channel');
+      initDataChannel(dc, to);
+
+      // 监听ICE候选
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          sendWebrtcSignal(to, { type: 'sms-candidate', candidate: e.candidate.toJSON() });
+        }
+      };
+
+      // 创建offer并发送
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendWebrtcSignal(to, { type: 'sms-offer', sdp: offer.sdp });
+
+      rtcConnections[`sms-${to}`] = pc;
+    }
+
+    // 发送短信数据
+    dc.send(JSON.stringify({ type: 'sms', body }));
+  }
+
+  // 清空输入框并刷新记录
+  document.getElementById('smsBody').value = '';
+  renderSms();
+}
+
+// 渲染短信记录
+function renderSms() {
+  const box = document.getElementById('msgList');
+  box.innerHTML = '';
+  const smsList = getStorage(STORAGE_KEYS.sms);
+  const currentPhone = currentUser.phone;
+
+  // 筛选当前用户相关的短信并排序
+  const mySms = Object.values(smsList)
+    .filter(sms => sms.from === currentPhone || sms.to === currentPhone)
+    .sort((a, b) => a.time - b.time);
+
+  mySms.forEach(sms => {
+    const div = document.createElement('div');
+    div.className = `msg ${sms.from === currentPhone ? 'me' : 'other'}`;
+    
+    // 显示发送方/群组名称
+    const users = getStorage(STORAGE_KEYS.users);
+    const groups = getStorage(STORAGE_KEYS.groups);
+    let senderName = sms.from;
+    if (users[sms.from]) senderName = users[sms.from].name;
+    if (sms.type === 'group' && groups[sms.to]) senderName = `${groups[sms.to].name} (${senderName})`;
+
+    div.innerHTML = `
+      <small style="font-size:10px;color:#666">${formatTime(sms.time)} ${senderName}</small><br>
+      ${sms.body}
+    `;
+    box.appendChild(div);
+  });
+
+  // 滚动到底部
+  box.scrollTop = box.scrollHeight;
+}
+
+/* ===================== 群组功能 ===================== */
+function createGroup() {
+  const groupName = document.getElementById('groupName').value.trim();
+  if (!groupName) {
+    alert('请输入群组名称');
+    return;
+  }
+
+  // 生成群组ID（g开头）
+  const groupId = `g${generateUUID().replace(/-/g, '')}`;
+  const groups = getStorage(STORAGE_KEYS.groups);
+
+  // 创建群组
+  groups[groupId] = {
+    name: groupName,
+    owner: currentUser.phone,
+    members: [currentUser.phone] // 初始成员为创建者
+  };
+  setStorage(STORAGE_KEYS.groups, groups);
+
+  // 更新当前用户的群组列表
+  const users = getStorage(STORAGE_KEYS.users);
+  if (!users[currentUser.phone].groups) users[currentUser.phone].groups = [];
+  users[currentUser.phone].groups.push(groupId);
+  setStorage(STORAGE_KEYS.users, users);
+
+  // 清空输入框并刷新群组列表
+  document.getElementById('groupName').value = '';
+  renderGroups();
+
+  // 生成邀请链接
+  const inviteLink = `${location.origin}${location.pathname.replace('app.html', '')}#invite=${groupId}`;
+  document.getElementById('inviteLink').value = inviteLink;
+  alert('群组创建成功！邀请链接已生成');
+}
+
+// 渲染群组列表
+function renderGroups() {
+  const ul = document.getElementById('groupList');
+  ul.innerHTML = '';
+  const users = getStorage(STORAGE_KEYS.users);
+  const groups = getStorage(STORAGE_KEYS.groups);
+  const myGroups = users[currentUser.phone]?.groups || [];
+
+  myGroups.forEach(groupId => {
+    const group = groups[groupId];
+    if (!group) return;
+
+    const li = document.createElement('li');
+    li.innerHTML =
+`
+      <span>${group.name}（成员：${group.members.length}人）</span>
+      <div>
+        <button onclick="copyInviteLink('${groupId}')" style="margin-right:6px;padding:4px 8px;font-size:12px;">复制邀请</button>
+        <button onclick="leaveGroup('${groupId}')" style="padding:4px 8px;font-size:12px;background:#e74c3c;">退出</button>
+      </div>
+    `;
+    ul.appendChild(li);
+  });
+}
+
+// 复制群组邀请链接
+function copyInviteLink(groupId) {
+  const inviteLink = `${location.origin}${location.pathname.replace('app.html', '')}#invite=${groupId}`;
+  document.getElementById('inviteLink').value = inviteLink;
+  
+  // 复制到剪贴板
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(inviteLink)
+      .then(() => alert('邀请链接已复制'))
+      .catch(() => alert('复制失败，请手动复制输入框中的链接'));
+  } else {
+    const input = document.getElementById('inviteLink');
+    input.focus();
+    input.select();
+    document.execCommand('copy');
+    alert('邀请链接已复制');
+  }
+}
+
+// 退出群组
+function leaveGroup(groupId) {
+  if (!confirm('确定要退出该群组吗？')) return;
+
+  const groups = getStorage(STORAGE_KEYS.groups);
+  const users = getStorage(STORAGE_KEYS.users);
+  const currentPhone = currentUser.phone;
+
+  // 从群组成员中移除
+  groups[groupId].members = groups[groupId].members.filter(member => member !== currentPhone);
+  
+  // 若退出后群组无成员，删除群组
+  if (groups[groupId].members.length === 0) {
+    delete groups[groupId];
+  } else if (groups[groupId].owner === currentPhone) {
+    // 若群主退出，指定第一个成员为新群主
+    groups[groupId].owner = groups[groupId].members[0];
+  }
+
+  // 从当前用户的群组列表中移除
+  users[currentPhone].groups = users[currentPhone].groups.filter(id => id !== groupId);
+
+  // 保存修改
+  setStorage(STORAGE_KEYS.groups, groups);
+  setStorage(STORAGE_KEYS.users, users);
+
+  // 刷新群组列表
+  renderGroups();
+  pushNotification(`已退出群组：${groups[groupId]?.name || '未知群组'}`);
+}
+
+// 通过链接加入群组
+function joinFromLink() {
+  const rawLink = document.getElementById('inviteLink').value.trim();
+  const match = rawLink.match(/invite=([^&]+)/);
+  
+  if (!match) {
+    alert('无效的邀请链接，请检查链接格式');
+    return;
+  }
+
+  const groupId = match[1];
+  const groups = getStorage(STORAGE_KEYS.groups);
+  const users = getStorage(STORAGE_KEYS.users);
+  const currentPhone = currentUser.phone;
+
+  // 检查群组是否存在
+  if (!groups[groupId]) {
+    alert('该群组不存在或已被解散');
+    return;
+  }
+
+  // 检查是否已在群组中
+  if (groups[groupId].members.includes(currentPhone)) {
+    alert('你已在该群组中');
+    return;
+  }
+
+  // 添加到群组成员
+  groups[groupId].members.push(currentPhone);
+
+  // 添加到当前用户的群组列表
+  if (!users[currentPhone].groups) users[currentPhone].groups = [];
+  users[currentPhone].groups.push(groupId);
+
+  // 保存修改
+  setStorage(STORAGE_KEYS.groups, groups);
+  setStorage(STORAGE_KEYS.users, users);
+
+  // 刷新群组列表并提示
+  renderGroups();
+  pushNotification(`已加入群组：${groups[groupId].name}`);
+  alert(`成功加入群组：${groups[groupId].name}`);
+}
+
+/* ===================== 通话记录 ===================== */
+function renderCallHistory() {
+  const ul = document.getElementById('callHistory');
+  ul.innerHTML = '';
+  const calls = getStorage(STORAGE_KEYS.calls);
+  const users = getStorage(STORAGE_KEYS.users);
+
+  // 转换为数组并按时间倒序排序
+  const callList = Object.values(calls)
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 10); // 只显示最近10条通话
+
+  callList.forEach(call => {
+    const li = document.createElement('li');
+    const callerName = users[call.target]?.name || call.target;
+    let callTypeText = '';
+    let callTypeColor = '';
+
+    switch (call.type) {
+      case 'in':
+        callTypeText = '已接来电';
+        callTypeColor = '#2ecc71';
+        break;
+      case 'out':
+        callTypeText = '呼出电话';
+        callTypeColor = '#3498db';
+        break;
+      case 'missed':
+        callTypeText = '未接来电';
+        callTypeColor = '#e74c3c';
+        break;
+    }
+
+    li.innerHTML = `
+      <div>
+        <span>${callerName}</span><br>
+        <small style="font-size:10px;color:#666">${formatTime(call.time)} · ${callTypeText} · ${formatDuration(call.duration)}</small>
+      </div>
+      <button onclick="callBack('${call.target}')" style="padding:4px 8px;font-size:12px;">回拨</button>
+    `;
+    li.querySelector('span').style.color = callTypeColor;
+    ul.appendChild(li);
+  });
+
+  // 若无通话记录
+  if (callList.length === 0) {
+    const li = document.createElement('li');
+    li.textContent = '暂无通话记录';
+    li.style.textAlign = 'center';
+    li.style.color = '#999';
+    ul.appendChild(li);
+  }
+}
+
+// 回拨功能
+function callBack(phone) {
+  document.getElementById('dialNumber').value = phone;
+  makeCall();
+}
+
+/* ===================== 通知功能 ===================== */
+function pushNotification(body) {
+  if (Notification.permission === 'granted') {
+    new Notification('大凉国云通信', {
+      body,
+      icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cGF0aCBmaWxsPSIjMzQ5OGRiIiBkPSJNMzg0IDM2OEgzMjBDMzA3Ljk1OCAzNjggMzAwIDM3NS45NTggMzAwIDM4OFY0NDhjMCAxMi4wNDIgNy45NTggMjAgMjAgMjBoODBjMTIuMDQyIDAgMjAtNy45NTggMjAtMjBWMzg4YzAtMTIuMDQyLTcuOTU4LTIwLTIwLTIweiIvPjxwYXRoIGZpbGw9IiNmZmYiIGQ9Ik0yNTYgMTkyYy0yNC44MTQgMC00NSAyMC4xODY0LTQ1IDQ1czIwLjE4NjQgNDUgNDUgNDUgNDUtNTAuMTg2NCA0NS00NXMyMC4xODY0LTQ1LTQ1LTQ1ek0yMjQgNDAwYzAtMTEuMDQyIDcuOTU4LTIwIDIwLTIwaDQxLjk5OTZjMTIuMDQyIDAgMjAgNy45NTggMjAgMjB2LTQ4Yy0xMi4wNDIgMC0yMC03Ljk1OC0yMC0yMHYtMjQuMDAwMWMyMi4wOTEtMTEuOTU4OCA0MC0zNC4wNDE5IDQwLTU5Ljk5OTl6bS0xNi0xMjh2LTI0YzAgLTExLjA0MiA3Ljk1OC0yMCAyMC0yMGg0OGMxMi4wNDIgMCAyMCA3Ljk1OCAyMCAyMHYyNGMwIDExLjA0Mi03Ljk1OCAyMC0yMCAyMGgtNDhjLTExLjA0MiAwLTIwLTcuOTU4LTIwLTIweiIvPjwvc3ZnPg=='
+    });
+  }
+}
+
+/* ===================== 处理短信相关WebRTC信令 ===================== */
+// 扩展信令处理逻辑（在原有handleWebrtcSignal函数后添加）
+function handleWebrtcSignal(signalData) {
+  const { from: callerPhone, signal } = signalData;
+  const { type, sdp, candidate } = signal;
+
+  // 忽略自己发送的信令
+  if (callerPhone === currentUser.phone) return;
+
+  switch (type) {
+    case 'offer':
+      handleIncomingCall(callerPhone, sdp);
+      break;
+    case 'answer':
+      handleAnswer(callerPhone, sdp);
+      break;
+    case 'candidate':
+      handleCandidate(callerPhone, candidate);
+      break;
+    case 'hangup':
+      handleHangup(callerPhone);
+      break;
+    // 新增短信相关信令处理
+    case 'sms-offer':
+      handleSmsOffer(callerPhone, sdp);
+      break;
+    case 'sms-candidate':
+      handleSmsCandidate(callerPhone, candidate);
+      break;
+    default:
+      break;
+  }
+}
+
+// 处理短信连接offer
+async function handleSmsOffer(fromPhone, sdp) {
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+  rtcConnections[`sms-${fromPhone}`] = pc;
+
+  // 监听数据通道
+  pc.ondatachannel = (e) => {
+    initDataChannel(e.channel, fromPhone);
+    // 发送离线短信（如果有的话）
+    sendOfflineSms(fromPhone, e.channel);
+  };
+
+  // 监听ICE候选
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      sendWebrtcSignal(fromPhone, { type: 'sms-candidate', candidate: e.candidate.toJSON() });
+    }
+  };
+
+  // 设置远程描述并发送answer
+  await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  sendWebrtcSignal(fromPhone, { type: 'sms-answer', sdp: answer.sdp });
+}
+
+// 处理短信连接ICE候选
+function handleSmsCandidate(fromPhone, candidate) {
+  const pc = rtcConnections[`sms-${fromPhone}`];
+  if (pc) {
+    pc.addIceCandidate(new RTCIceCandidate(candidate))
+      .catch(err => console.error('短信连接添加ICE候选失败：', err));
+  }
+}
+
+// 发送离线短信
+function sendOfflineSms(targetPhone, dc) {
+  const offlineSms = getStorage('dl_offline_sms');
+  const smsList = offlineSms[targetPhone] || [];
+  if (smsList.length === 0) return;
+
+  // 确保数据通道已打开
+  const send = () => {
+    if (dc.readyState === 'open') {
+      smsList.forEach(sms => dc.send(JSON.stringify(sms)));
+      // 清空离线短信
+      delete offlineSms[targetPhone];
+      setStorage('dl_offline_sms', offlineSms);
+    } else {
+      setTimeout(send, 100);
+    }
+  };
+
+  send();
+}
+
+/* ===================== 退出功能 ===================== */
+function logout() {
+  // 标记当前用户离线
+  const users = getStorage(STORAGE_KEYS.users);
+  if (users[currentUser.phone]) {
+    users[currentUser.phone].online = false;
+    users[currentUser.phone].lastOnline = Date.now();
+    setStorage(STORAGE_KEYS.users, users);
+  }
+
+  // 关闭所有连接和流
+  if (currentCall) endCall();
+  Object.values(rtcConnections).forEach(pc => pc.close());
+  if (localAudioStream) {
+    localAudioStream.getTracks().forEach(track => track.stop());
+  }
+
+  // 清除当前用户缓存
+  localStorage.removeItem(STORAGE_KEYS.currentUser);
+  location.href = './index.html';
+}
+
+/* ===================== 初始化离线短信处理 ===================== */
+(function initOfflineSms() {
+  const offlineSms = getStorage('dl_offline_sms');
+  const myOfflineSms = offlineSms[currentUser.phone] || [];
+  if (myOfflineSms.length === 0) return;
+
+  // 处理离线短信
+  const smsList = getStorage(STORAGE_KEYS.sms);
+  myOfflineSms.forEach(sms => {
+    smsList.push({
+      from: sms.from,
+      to: currentUser.phone,
+      body: sms.body,
+      time: sms.time,
+      type: sms.type === 'group-sms' ? 'group' : 'private'
+    });
+  });
+
+  // 清空离线短信并保存
+  delete offlineSms[currentUser.phone];
+  setStorage('dl_offline_sms', offlineSms);
+  setStorage(STORAGE_KEYS.sms, smsList);
+
+  // 刷新短信列表并提示
+  if (document.getElementById('smsPage').classList.contains('active')) {
+    renderSms();
+  }
+  pushNotification(`收到${myOfflineSms.length}条离线短信`);
+})();
+</script>
+</body>
+</html><!-- 这里是 app.html 原本的内容 -->
+
+    <!-- 粘贴刚才的代码 -->
+    <div style="margin:20px;padding:16px;border:1px solid #eee;border-radius:8px;">
+      <h3>号码属地查询</h3>
+      <input type="text" id="phoneInput" placeholder="输入号码（如+3-260-001-12345678）" style="width:100%;padding:8px;margin:8px 0;">
+      <button onclick="queryPhoneArea()" style="padding:8px 16px;background:#004bbb;color:#fff;border:none;border-radius:4px;">查询属地</button>
+      <div id="areaResult" style="margin-top:12px;color:#333;"></div>
+    </div>
+
+    <script>
+    // 从 gen.html 读取地区字典
+    async function getAreaDict() {
+      try {
+        const res = await fetch('./gen.html');
+        const text = await res.text();
+        const codeStr = text.match(/const fixedCodes=([\s\S]*?);\s*\/\* ==================================================== \*\//)[1];
+        const fixedCodes = eval(`(${codeStr})`);
+        return fixedCodes;
+      } catch (err) {
+        alert('读取地区数据失败');
+        return {};
+      }
+    }
+
+    function getPhonePrefix(phone) {
+      const match = phone.match(/\+3-([\d-]+)-\d{8}/);
+      return match ? match[1] : '';
+    }
+
+    function findAreaByPrefix(dict, prefix) {
+      for (const prov of Object.keys(dict)) {
+        const cityDict = dict[prov];
+        for (const city of Object.keys(cityDict)) {
+          const districtDict = cityDict[city];
+          for (const district of Object.keys(districtDict)) {
+            if (districtDict[district] === prefix) {
+              return `${prov} > ${city} > ${district === '_central' ? '直辖区' : district}`;
+            }
+          }
+        }
+      }
+      return '未匹配到属地';
+    }
+
+    async function queryPhoneArea() {
+      const phone = document.getElementById('phoneInput').value.trim();
+      if (!phone) return alert('请输入号码');
+
+      const prefix = getPhonePrefix(phone);
+      if (!prefix) return document.getElementById('areaResult').textContent = '号码格式错误（应为+3-前缀-8位数字）';
+
+      const areaDict = await getAreaDict();
+      const area = findAreaByPrefix(areaDict, prefix);
+      document.getElementById('areaResult').textContent = `属地：${area}`;
+    }
+    </script>
+  </body>
+</html>
